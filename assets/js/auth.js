@@ -1,0 +1,36 @@
+import { api, getAuth } from './api.js';
+import { el } from './dom.js';
+import { validateSession, homeUrl } from './session.js';
+const main=document.getElementById('main');
+document.getElementById('site-header').innerHTML='<div class="container header-inner"><span class="logo"><span class="logo-mark">u&i</span><span class="logo-name">U&I MART</span></span></div>';
+document.getElementById('site-footer').textContent='';
+main.innerHTML=`<div class="container login-layout"><section class="login-story"><p class="eyebrow">YOUR U&I CONNECTION</p><h1>Welcome to U&I.</h1><p>Create your account once, verify your email, then log in with your password.</p><p class="small">Already used our email-code login? Choose Sign Up once to set your password with the same email. Your account and history stay together.</p></section><section class="login-card"><div class="filters" aria-label="Account options"><button class="filter" id="show-signup">Sign Up</button><button class="filter" id="show-login">Login</button></div><h2 id="auth-title"></h2>
+<form id="signup-form"><label for="name">Full Name</label><input id="name" autocomplete="name" maxlength="100" required><label for="signup-email">Email</label><input id="signup-email" type="email" autocomplete="email" maxlength="200" required><label for="signup-password">Password</label><input id="signup-password" type="password" autocomplete="new-password" minlength="5" maxlength="128" required><p class="small">Use 5–128 characters. Letters, numbers, or a mix are allowed; no uppercase or special characters are required.</p><label for="confirm-password">Confirm Password</label><input id="confirm-password" type="password" autocomplete="new-password" minlength="5" maxlength="128" required><button class="button" type="submit">Sign Up</button></form>
+<form id="code-form" hidden><label for="code">8-digit email verification code</label><input id="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{8}" maxlength="8" required><button class="button" type="submit">Verify email</button><button class="button secondary" id="restart-signup" type="button">Start again / request another code</button></form>
+<form id="login-form" hidden><label for="email">Email</label><input id="email" type="email" autocomplete="email" maxlength="200" required><label for="password">Password</label><input id="password" type="password" autocomplete="current-password" minlength="5" maxlength="128" required><button class="button" type="submit">Login</button></form><p id="auth-status" class="status" role="status" aria-live="polite"></p></section>
+<section class="login-assistant" aria-label="Public customer assistant"><p class="eyebrow">RULE-BASED U&I ASSISTANT</p><div class="ui-chatbot ui-chatbot--embedded" id="uiChatbot"><section class="ui-chat-panel" id="uiChatPanel" aria-labelledby="uiChatTitle" aria-hidden="true"><header class="ui-chat-header"><div class="ui-chat-brand-icon" aria-hidden="true"><span>U&amp;I</span></div><div class="ui-chat-heading"><h2 id="uiChatTitle">U&amp;I Mart Assistant</h2><div class="ui-chat-subtitle"><span class="ui-chat-status-dot" aria-hidden="true"></span>Public Customer Assistant</div></div><button class="ui-chat-close" id="uiChatClose" type="button" aria-label="Close customer assistant"><span aria-hidden="true">×</span></button></header><div class="ui-chat-messages" id="uiChatMessages" role="log" aria-live="polite" aria-relevant="additions text" aria-busy="false"></div><form class="ui-chat-form" id="uiChatForm"><label class="ui-chat-visually-hidden" for="uiChatInput">Ask the customer assistant</label><input class="ui-chat-input" id="uiChatInput" type="text" maxlength="500" autocomplete="off" enterkeyhint="send" placeholder="Ask about products, branches or deals..."><button class="ui-chat-send" id="uiChatSend" type="submit" aria-label="Send message" disabled><span aria-hidden="true">↑</span></button></form></section><button class="ui-chat-launcher" id="uiChatLauncher" type="button" aria-label="Open customer assistant" aria-controls="uiChatPanel" aria-expanded="false"><span class="ui-chat-launcher-icon" aria-hidden="true">✦</span><span class="ui-chat-launcher-label">Chat with U&amp;I</span></button></div></section></div>`;
+const loginLeft=document.createElement('div');loginLeft.className='login-left';
+document.querySelector('.login-story').before(loginLeft);
+loginLeft.append(document.querySelector('.login-story'),document.querySelector('.login-assistant'));
+const status=document.getElementById('auth-status');let pendingEmail='',busy=false;
+function show(mode){if(busy)return;for(const id of ['signup','code','login'])document.getElementById(id+'-form').hidden=id!==mode;document.getElementById('auth-title').textContent=mode==='signup'?'Create your account':mode==='code'?'Verify your email':'Welcome back';for(const id of ['signup','login'])document.getElementById('show-'+id).setAttribute('aria-pressed',String(id===mode));status.textContent='';document.querySelectorAll('input[type=password]').forEach(i=>i.value='');}
+async function run(fn){if(busy)return;busy=true;document.querySelectorAll('button').forEach(b=>b.disabled=true);try{await fn();}catch(error){status.textContent=error.message;status.classList.add('error');}finally{busy=false;document.querySelectorAll('button').forEach(b=>b.disabled=false);}}
+document.getElementById('show-signup').onclick=()=>show('signup');document.getElementById('show-login').onclick=()=>show('login');document.getElementById('restart-signup').onclick=()=>show('signup');
+document.getElementById('signup-form').onsubmit=e=>{e.preventDefault();run(async()=>{
+ const password=document.getElementById('signup-password').value;
+ if(password!==document.getElementById('confirm-password').value)throw new Error('Passwords do not match.');
+ const email=document.getElementById('signup-email').value.trim().toLowerCase();
+ const r=await api('requestCode',{name:document.getElementById('name').value,email,password});pendingEmail=email;
+ busy=false;show('code');busy=true;status.textContent=r.message;document.getElementById('code').focus();
+});};
+document.getElementById('code-form').onsubmit=e=>{e.preventDefault();run(async()=>{
+ const r=await api('verifyCode',{email:pendingEmail,code:document.getElementById('code').value});
+ document.getElementById('code').value='';localStorage.setItem('ui_returning','1');busy=false;show('login');busy=true;
+ document.getElementById('email').value=pendingEmail;status.textContent=r.message;document.getElementById('password').focus();
+});};
+document.getElementById('login-form').onsubmit=e=>{e.preventDefault();run(async()=>{
+ const password=document.getElementById('password');const r=await api('login',{email:document.getElementById('email').value,password:password.value});password.value='';
+ sessionStorage.setItem('ui_auth',JSON.stringify({token:r.token,user:r.user,expires_at:r.expires_at}));sessionStorage.setItem('ui_auth_validated_at',String(Date.now()));localStorage.setItem('ui_returning','1');location.replace(homeUrl);
+});};
+show(localStorage.getItem('ui_returning')?'login':'signup');
+if(getAuth()?.token){try{if(await validateSession())location.replace(homeUrl);}catch(error){status.textContent=error.message;}}

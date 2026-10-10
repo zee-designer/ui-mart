@@ -1,0 +1,55 @@
+function json_(data){return ContentService.createTextOutput(JSON.stringify(data)).setMimeType(ContentService.MimeType.JSON);}
+function doGet(){return json_({success:true,service:'U&I Mart API',version:1});}
+function chatRate_(sessionId){
+  const cache=CacheService.getScriptCache(),key='chat:'+sessionId;let window;
+  try{window=JSON.parse(cache.get(key)||'null');}catch(error){}
+  if(!window||typeof window!=='object'||!Number.isFinite(window.until)||window.until<=Date.now())window={count:0,until:Date.now()+60000};
+  if(window.count>=20)throw new Error('Please wait a minute before asking another question.');
+  window.count++;
+  // Preserve the first request's deadline instead of extending it on every message.
+  cache.put(key,JSON.stringify(window),Math.max(1,Math.ceil((window.until-Date.now())/1000)));
+}
+function doPost(e){
+  let locked=false;const lock=LockService.getScriptLock();
+  try{
+    const raw=e&&e.postData&&e.postData.contents;if(!raw||raw.length>12000)throw new Error('Invalid request.');
+    let payload;try{payload=JSON.parse(raw);}catch(error){throw new Error('Invalid JSON request.');}
+    if(!payload||typeof payload!=='object'||Array.isArray(payload))throw new Error('Invalid request.');
+    const actions=['branches','deals','chat','aiChat','requestCode','verifyCode','login','me','logout','dashboard','contact'];
+    if(!actions.includes(payload.action))throw new Error('Unknown action.');
+    if(!/^[A-Za-z0-9_-]{3,64}$/.test(String(payload.session_id||'')))throw new Error('Invalid session identifier.');
+    if(['branches','deals'].includes(payload.action))authenticate_(payload.token,true);
+    if(payload.action==='branches')return json_({success:true,branches:DataService.getBranches()});
+    if(payload.action==='deals'){
+      const activeBranches=DataService.getBranches();
+      return json_({success:true,deals:DataService.getDeals().filter(d=>activeBranches.some(b=>b.city===d.branch))});
+    }
+    // The AI route is authenticated before any Sheets data or provider call is made.
+    if(payload.action==='aiChat')return json_(aiChat_(authenticate_(payload.token,true),payload));
+    // Public reads do not need to queue behind chat/authentication writes.
+    lock.waitLock(20000);locked=true;
+    if(payload.action==='requestCode')return json_(requestCode_(payload));
+    if(payload.action==='verifyCode')return json_(verifyCode_(payload));
+    if(payload.action==='login')return json_(login_(payload));
+    if(payload.action==='logout')return json_(logout_(payload.token));
+    if(payload.action==='me')return json_({success:true,user:publicUser_(authenticate_(payload.token,true))});
+    if(payload.action==='contact')return json_(contact_(authenticate_(payload.token,true),payload));
+    if(payload.action==='dashboard')return json_(dashboard_(authenticate_(payload.token,true),payload));
+    // Chat is public on the login page. A valid token attributes the chat; guests stay anonymous.
+    const user=authenticate_(payload.token,false);
+    const message=typeof payload.message==='string'?payload.message.trim():'';
+    if(!message||message.length>500)throw new Error('Ask a question between 1 and 500 characters.');
+    // Global persistent ceiling plus per-session cache rate. Do not trust a client ID as identity.
+    rate_('chat-global',Number(setting_('MAX_CHATS_PER_HOUR'))||500,3600);
+    chatRate_(payload.session_id);
+    const context=payload.context&&typeof payload.context==='object'&&!Array.isArray(payload.context)?payload.context:{};
+    const result=ChatEngine.answer(message,{products:DataService.getProducts(),deals:DataService.getDeals(),branches:DataService.getBranches()},context);
+    DataService.saveChatLog({chat_id:id_(),session_id:payload.session_id,conversation_id:payload.session_id,user_id:user?user.user_id:'',user_name:user?user.name:'Guest',user_message:message,bot_response:JSON.stringify(result),assistant_response:result.reply,detected_intent:result.intent,detected_branch:result.branch||'',detected_category:result.category||'',detected_product:result.products.map(p=>p.name).join(', '),products_referenced:result.products.map(p=>p.product_id).join(', '),chatbot_type:'rule_based',timestamp:now_()});
+    return json_(result);
+  }catch(error){
+    if(error.message==='AI_NOT_CONFIGURED')return json_({success:false,code:'AI_NOT_CONFIGURED',message:'The AI assistant is not configured yet.'});
+    const known=/^(Enter |Check |Code |The code |Too many |Please |Your session |This account |This email |Email or password |Owner access |Invalid |Unknown |Ask a question|The AI service)/;
+    const message=known.test(error.message)?error.message:'The service is temporarily unavailable. Please try again later.';
+    console.error('U&I API request failed');return json_({success:false,message,...(error.code==='AUTH_REQUIRED'?{code:'AUTH_REQUIRED'}:{})});
+  }finally{if(locked)lock.releaseLock();}
+}
